@@ -4,7 +4,13 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use serde::Deserialize;
-use std::{error::Error, io, process::Command};
+use std::{
+    error::Error,
+    fmt::Display,
+    io,
+    process::Command,
+    time::{Duration, Instant},
+};
 use tui::{
     backend::{Backend, CrosstermBackend},
     layout::{Alignment, Constraint, Direction, Layout},
@@ -18,41 +24,12 @@ type AnyError = Box<dyn Error>;
 // Constants
 const APP_TITLE: &str = "Nightride FM - The Home of Synthwave - Synthwave Radio - Free 24/7 Live Streaming | Nightride FM";
 const STATION_URL: &str = "http://stream.nightride.fm/nightride.ogg";
-const PLAYER_PID_FILE_PATH: &str = "/tmp/nightride.fm.pid";
-const INPUT_IPC_SERVER_FILE_PATH: &str = "/tmp/nightride.fm.sock";
-
-/// Get the PID of the player
-/// This will check if the process and arguments match
-fn get_player_pid() -> Result<String, AnyError> {
-    let pid = std::fs::read_to_string(PLAYER_PID_FILE_PATH)?;
-    // Check if this process exists and is the correct one
-    /*
-    let cmdline_expected = format!("{}\0{}\0", "mpv", PLAYER_ARGS.join("\0"));
-    let cmdline = std::fs::read_to_string(format!("/proc/{}/cmdline", pid))?;
-    match cmdline == cmdline_expected {
-        true => Ok(pid),
-        false => Err(format!("/proc/{}/cmdline was not as expected", pid).into()),
-    }
-    */
-    Ok(pid)
-}
-
-/// Check if the player is running
-/// This will return false if the PID file does not exist or is invalid
-fn is_player_running() -> bool {
-    if !std::path::Path::new(PLAYER_PID_FILE_PATH).exists() {
-        return false;
-    }
-    match get_player_pid() {
-        std::result::Result::Ok(_) => true,
-        Err(_) => false,
-    }
-}
+const INPUT_IPC_SERVER_FILE_PATH: &str = "/tmp/nightride.sock";
+const POLLING_RATE: Duration = Duration::from_secs(1);
 
 /// Start the player
-/// This will write the PID of the spawned process to the PID file
-fn start_player() -> Result<(), AnyError> {
-    let player = Command::new("mpv")
+fn mpv_start() -> Result<(), AnyError> {
+    Command::new("mpv")
         .args([
             STATION_URL.into(),
             format!("--input-ipc-server={}", INPUT_IPC_SERVER_FILE_PATH),
@@ -60,36 +37,32 @@ fn start_player() -> Result<(), AnyError> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()?;
-    std::fs::write(PLAYER_PID_FILE_PATH, player.id().to_string())?;
     Ok(())
 }
 
 /// Stop the player
-/// This will always remove the PID file
-/// If the player is running, the corresponding process will be stopped
-fn stop_player() -> Result<(), AnyError> {
-    let pid = get_player_pid();
-    let remove_pid_file = || Ok(std::fs::remove_file(PLAYER_PID_FILE_PATH)?);
-    match pid {
-        std::result::Result::Ok(pid) => {
-            Command::new("kill").arg(pid).spawn()?;
-            remove_pid_file()
-        }
-        Err(_) => remove_pid_file(),
+/// This will query the socket for the PID of the running process and kill it
+fn mpv_stop() -> Result<(), AnyError> {
+    let pid = mpv_get_property::<u32>("pid")?;
+    Command::new("kill").arg(pid.to_string()).output()?;
+    Ok(())
+}
+
+/// Ensure that the player is running and playing the station
+fn ensure_mpv_running_station() -> Result<(), AnyError> {
+    let is_running_station = mpv_get_property::<String>("filename").unwrap_or("".into())
+        == STATION_URL.split("/").last().unwrap();
+    if !is_running_station {
+        mpv_stop().ok(); // Ignore errors (MPV might not have been running)
+        mpv_start()?;
     }
+    Ok(())
 }
 
 #[derive(Deserialize)]
 struct MpvProperty<T> {
     data: Option<T>,
     error: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct Track {
-    title: String,
-    artist: String,
-    album: String,
 }
 
 fn mpv_get_property<T: for<'a> serde::de::Deserialize<'a>>(property: &str) -> Result<T, AnyError> {
@@ -123,12 +96,21 @@ fn mpv_set_property<T: serde::Serialize>(property: &str, value: T) -> Result<(),
     }
 }
 
-fn get_track_info() -> Result<Track, AnyError> {
-    return Ok(mpv_get_property::<Track>("metadata")?);
+#[derive(Debug, Deserialize)]
+struct Track {
+    title: String,
+    artist: String,
+    album: String,
+}
+
+impl Display for Track {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} - {} ({})", self.artist, self.title, self.album)
+    }
 }
 
 struct App {
-    is_player_running: bool,
+    is_paused: bool,
     current_track: Option<Track>,
     volume: f32,
 }
@@ -136,11 +118,22 @@ struct App {
 impl Default for App {
     fn default() -> Self {
         Self {
-            is_player_running: is_player_running(),
+            is_paused: true,
             current_track: None,
-            volume: mpv_get_property("volume").unwrap_or(100.0),
+            volume: 100.0,
         }
     }
+}
+
+fn get_track_info() -> Result<Track, AnyError> {
+    let track_info = mpv_get_property::<Track>("metadata")?;
+    // MPV appends successive metadata to the end of the string, separated by semicolons
+    let get_last = |s: String| s.split(";").last().unwrap().to_string();
+    Ok(Track {
+        title: get_last(track_info.title),
+        artist: get_last(track_info.artist),
+        album: get_last(track_info.album),
+    })
 }
 
 fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
@@ -159,19 +152,19 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
         .split(f.size());
     f.render_widget(
         Paragraph::new(Text::from(Spans::from(format!(
-            "Player State: {}",
-            match app.is_player_running {
-                true => "playing",
-                false => " paused",
+            "State:  {}",
+            match app.is_paused {
+                true => "Paused",
+                false => "Playing",
             }
         )))),
         chunks[0],
     );
     f.render_widget(
         Paragraph::new(Text::from(Spans::from(format!(
-            "Current Track: {}",
+            "Track:  {}",
             match &app.current_track {
-                Some(track) => format!("{:?}", track),
+                Some(track) => format!("{}", track),
                 None => "???".to_string(),
             }
         )))),
@@ -184,12 +177,21 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
 }
 
 fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> Result<(), AnyError> {
+    let mut next_poll = Instant::now();
     loop {
+        // Synchronize app state with mpv (and perhaps start mpv if it's not running)
+        if next_poll < Instant::now() {
+            ensure_mpv_running_station()?;
+            app.is_paused = mpv_get_property("pause").unwrap_or(true);
+            app.current_track = get_track_info().ok();
+            app.volume = mpv_get_property("volume").unwrap_or(100.0);
+            next_poll = Instant::now() + POLLING_RATE;
+        }
+
         // Update the UI
         terminal.draw(|f| ui(f, &app))?;
 
         // Handle events
-        app.current_track = get_track_info().ok();
         let mut update_volume = |change: f32| -> Result<(), AnyError> {
             let volume = mpv_get_property::<f32>("volume")?;
             let volume = (volume + change).max(0.0).min(150.0);
@@ -201,12 +203,8 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> Result<(), A
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => break,
                 KeyCode::Char('p') => {
-                    if app.is_player_running {
-                        stop_player()?;
-                    } else {
-                        start_player()?;
-                    }
-                    app.is_player_running = !app.is_player_running;
+                    mpv_set_property("pause", !app.is_paused)?;
+                    app.is_paused = !app.is_paused;
                 }
                 KeyCode::Char('V') => {
                     update_volume(5.0)?;
@@ -222,6 +220,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> Result<(), A
 }
 
 fn main() -> Result<(), AnyError> {
+    get_track_info().unwrap();
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;

@@ -15,10 +15,10 @@ A less resource-intensive way to listen to my favorite synth-wave radio station.
 ## Roadmap
 - [x] Play/pause
 - [x] Quit
-- [ ] Display the current song
-- [ ] Rewrite some parts for https://mpv.io/manual/master/
+- [x] Display the current song
 - [ ] Look up the current song on YouTube Music
 - [ ] Nice TUI
 - [x] Volume control
 - [ ] Add more stations
-- [ ] CLI (start/stop, station selection, get YT Music search link)
+- [ ] CLI (start/stop, station selection, get YT Music search link, path to mpv socket)
+- [ ] Inline code documentation
