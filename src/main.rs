@@ -26,6 +26,7 @@ const APP_TITLE: &str = "Nightride FM - The Home of Synthwave";
 const STATION_URL: &str = "http://stream.nightride.fm/nightride.ogg";
 const INPUT_IPC_SERVER_FILE_PATH: &str = "/tmp/nightride.sock";
 const POLLING_RATE: Duration = Duration::from_secs(1);
+const YT_MUSIC_SEARCH_URL: &str = "https://music.youtube.com/search?q=";
 
 /// Start the player
 fn mpv_start() -> Result<(), AnyError> {
@@ -36,8 +37,8 @@ fn mpv_start() -> Result<(), AnyError> {
             STATION_URL,
             format!("--input-ipc-server={}", INPUT_IPC_SERVER_FILE_PATH).as_str(),
             ">/dev/null", // Do not create nohup.out
-            "2>&1", // Redirect stderr to stdout
-            "&", // Run in background
+            "2>&1",       // Redirect stderr to stdout
+            "&",          // Run in background
         ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -110,7 +111,15 @@ struct Track {
 
 impl Display for Track {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} - {} ({})", self.artist, self.title, self.album)
+        write!(f, "{} by {} ({})", self.title, self.artist, self.album)
+    }
+}
+
+impl Track {
+    fn search_yt_music(&self) {
+        let search_url =
+            format!("{}{} {}", YT_MUSIC_SEARCH_URL, self.title, self.artist).replace(" ", "+");
+        Command::new("xdg-open").arg(search_url).spawn().ok();
     }
 }
 
@@ -221,6 +230,11 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> Result<(), A
                 }
                 KeyCode::Char('v') => {
                     update_volume(-5.0)?;
+                }
+                KeyCode::Char('y') => {
+                    if let Some(track) = &app.current_track {
+                        track.search_yt_music();
+                    }
                 }
                 _ => {}
             }

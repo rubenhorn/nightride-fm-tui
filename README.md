@@ -1,6 +1,8 @@
 # Nightride.FM TUI
 A less resource-intensive way to listen to my favorite synth-wave radio station.
 
+This app is Linux-only.
+
 ## Installation
 1. Install the dependencies (mpv, rust toolchain)
 2. Clone the repository
@@ -10,13 +12,14 @@ A less resource-intensive way to listen to my favorite synth-wave radio station.
 1. Run `nightride`
 2. Press `p` to play/pause
 3. Change the volume with `v` and `V`
-4. Press `q` to quit
+4. Search the current song on YouTube Music with `y`
+5. Press `q` to quit
 
 ## Roadmap
 - [x] Play/pause
 - [x] Quit
 - [x] Display the current song
-- [ ] Look up the current song on YouTube Music
+- [x] Look up the current song on YouTube Music
 - [ ] Nice TUI
 - [x] Volume control
 - [ ] Add more stations
