@@ -22,17 +22,22 @@ use tui::{
 type AnyError = Box<dyn Error>;
 
 // Constants
-const APP_TITLE: &str = "Nightride FM - The Home of Synthwave - Synthwave Radio - Free 24/7 Live Streaming | Nightride FM";
+const APP_TITLE: &str = "Nightride FM - The Home of Synthwave";
 const STATION_URL: &str = "http://stream.nightride.fm/nightride.ogg";
 const INPUT_IPC_SERVER_FILE_PATH: &str = "/tmp/nightride.sock";
 const POLLING_RATE: Duration = Duration::from_secs(1);
 
 /// Start the player
 fn mpv_start() -> Result<(), AnyError> {
-    Command::new("mpv")
+    // Use nohup to avoid the process being killed when the terminal is closed
+    Command::new("nohup")
         .args([
-            STATION_URL.into(),
-            format!("--input-ipc-server={}", INPUT_IPC_SERVER_FILE_PATH),
+            "mpv",
+            STATION_URL,
+            format!("--input-ipc-server={}", INPUT_IPC_SERVER_FILE_PATH).as_str(),
+            ">/dev/null", // Do not create nohup.out
+            "2>&1", // Redirect stderr to stdout
+            "&", // Run in background
         ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -176,15 +181,20 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
     );
 }
 
+fn update_app_state(app: &mut App) -> Result<(), AnyError> {
+    ensure_mpv_running_station()?;
+    app.is_paused = mpv_get_property("pause").unwrap_or(true);
+    app.current_track = get_track_info().ok();
+    app.volume = mpv_get_property("volume").unwrap_or(100.0);
+    Ok(())
+}
+
 fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> Result<(), AnyError> {
     let mut next_poll = Instant::now();
     loop {
         // Synchronize app state with mpv (and perhaps start mpv if it's not running)
         if next_poll < Instant::now() {
-            ensure_mpv_running_station()?;
-            app.is_paused = mpv_get_property("pause").unwrap_or(true);
-            app.current_track = get_track_info().ok();
-            app.volume = mpv_get_property("volume").unwrap_or(100.0);
+            update_app_state(&mut app)?;
             next_poll = Instant::now() + POLLING_RATE;
         }
 
@@ -220,7 +230,6 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> Result<(), A
 }
 
 fn main() -> Result<(), AnyError> {
-    get_track_info().unwrap();
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
