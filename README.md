@@ -25,6 +25,7 @@ This app is Linux-only.
 - [x] Volume control
 - [ ] List of previous songs
 - [x] Add more stations
-- [ ] Remember the last station
+- [x] Remember the last station and volume
+- [ ] Seek forward when resuming playback
 - [ ] CLI (start/stop, station selection, get YT Music search link, path to mpv socket)
 - [ ] Inline code documentation

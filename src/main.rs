@@ -3,7 +3,8 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use serde::Deserialize;
+use home::home_dir;
+use serde::{Deserialize, Serialize};
 use std::{
     error::Error,
     fmt::Display,
@@ -19,7 +20,7 @@ use tui::{
     Frame, Terminal,
 };
 
-type AnyError = Box<dyn Error>;
+type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 // Constants
 const APP_TITLE: &str = "Nightride FM - The Home of Synthwave";
@@ -36,9 +37,10 @@ const STATIONS: [&str; 7] = [
 const INPUT_IPC_SERVER_FILE_PATH: &str = "/tmp/nightride.sock";
 const POLLING_RATE: Duration = Duration::from_secs(1);
 const YT_MUSIC_SEARCH_URL: &str = "https://music.youtube.com/search?q=";
+const USER_SERIALIZED_APP_FILE_PATH: &str = ".local/share/nightride/app.json"; // relative to home dir
 
 /// Start the player
-fn mpv_start(station: usize) -> Result<(), AnyError> {
+fn mpv_start(station: usize) -> Result<()> {
     let station_url = format!("{}{}.ogg", STATION_BASE_URL, STATIONS[station]);
     // Use nohup to avoid the process being killed when the terminal is closed
     Command::new("nohup")
@@ -58,14 +60,16 @@ fn mpv_start(station: usize) -> Result<(), AnyError> {
 
 /// Stop the player
 /// This will query the socket for the PID of the running process and kill it
-fn mpv_stop() -> Result<(), AnyError> {
-    let pid = mpv_get_property::<u32>("pid")?;
-    Command::new("kill").arg(pid.to_string()).output()?;
+fn mpv_stop() -> Result<()> {
+    if let Ok(pid) = mpv_get_property::<u32>("pid") {
+        // Ignore errors (MPV might not have been running)
+        Command::new("kill").arg(pid.to_string()).output()?;
+    }
     Ok(())
 }
 
 /// Ensure that the player is running and playing the station
-fn ensure_mpv_running_station(station: usize) -> Result<(), AnyError> {
+fn ensure_playing_station(station: usize) -> Result<()> {
     let is_running_station = mpv_get_property::<String>("filename")
         .unwrap_or("".into())
         .split(".")
@@ -73,7 +77,7 @@ fn ensure_mpv_running_station(station: usize) -> Result<(), AnyError> {
         .unwrap_or("")
         == STATIONS[station];
     if !is_running_station {
-        mpv_stop().ok(); // Ignore errors (MPV might not have been running)
+        mpv_stop()?;
         mpv_start(station)?;
     }
     Ok(())
@@ -85,7 +89,7 @@ struct MpvProperty<T> {
     error: String,
 }
 
-fn mpv_get_property<T: for<'a> serde::de::Deserialize<'a>>(property: &str) -> Result<T, AnyError> {
+fn mpv_get_property<T: for<'a> serde::de::Deserialize<'a>>(property: &str) -> Result<T> {
     let shell_cmd = format!(
         "echo '{{\"command\":[\"get_property\",\"{}\"]}}' | socat - {}",
         property, INPUT_IPC_SERVER_FILE_PATH
@@ -100,7 +104,7 @@ fn mpv_get_property<T: for<'a> serde::de::Deserialize<'a>>(property: &str) -> Re
     }
 }
 
-fn mpv_set_property<T: serde::Serialize>(property: &str, value: T) -> Result<(), AnyError> {
+fn mpv_set_property<T: serde::Serialize>(property: &str, value: T) -> Result<()> {
     let value_json = serde_json::to_string(&value)?;
     let shell_cmd = format!(
         "echo '{{\"command\":[\"set_property\",\"{}\",{}]}}' | socat - {}",
@@ -116,7 +120,7 @@ fn mpv_set_property<T: serde::Serialize>(property: &str, value: T) -> Result<(),
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Track {
     title: String,
     artist: String,
@@ -137,8 +141,10 @@ impl Track {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 struct App {
     is_paused: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     current_track: Option<Track>,
     volume: f32,
     station: usize,
@@ -155,7 +161,56 @@ impl Default for App {
     }
 }
 
-fn get_track_info() -> Result<Track, AnyError> {
+impl App {
+    fn update(&mut self) {
+        if let Ok(is_paused) = mpv_get_property("pause") {
+            self.is_paused = is_paused;
+        }
+        if let Ok(volume) = mpv_get_property("volume") {
+            self.volume = volume;
+        }
+        self.current_track = get_track_info().ok();
+        if let Some(station) = STATIONS
+            .iter()
+            .position(|&s| s == mpv_get_property::<String>("filename").unwrap_or_default())
+        {
+            self.station = station;
+        }
+    }
+
+    fn load() -> Self {
+        let app = match serde_json::from_str(
+            std::fs::read_to_string(
+                home_dir()
+                    .unwrap_or_default()
+                    .join(USER_SERIALIZED_APP_FILE_PATH),
+            )
+            .unwrap_or("".into())
+            .as_str(),
+        ) {
+            Ok(app) => app,
+            Err(_) => Self::default(),
+        };
+        ensure_playing_station(app.station).ok();
+        app
+    }
+
+    fn store(&self) -> Result<()> {
+        // Make path if it doesn't exist
+        let path = home_dir()
+            .ok_or("Could not get home directory")?
+            .join(USER_SERIALIZED_APP_FILE_PATH);
+        if let Some(parent) = path.parent() {
+            if !parent.exists() {
+                std::fs::create_dir_all(parent).ok();
+            }
+        }
+        std::fs::write(path, serde_json::to_string_pretty(self)?)?;
+        Ok(())
+    }
+}
+
+fn get_track_info() -> Result<Track> {
     let track_info = mpv_get_property::<Track>("metadata")?;
     // MPV appends successive metadata to the end of the string, separated by semicolons
     let get_last = |s: String| s.split(";").last().unwrap().to_string();
@@ -213,21 +268,13 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
     );
 }
 
-fn update_app_state(app: &mut App) -> Result<(), AnyError> {
-    ensure_mpv_running_station(app.station)?;
-    app.is_paused = mpv_get_property("pause").unwrap_or(true);
-    app.current_track = get_track_info().ok();
-    app.volume = mpv_get_property("volume").unwrap_or(100.0);
-    Ok(())
-}
-
-fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> Result<(), AnyError> {
+fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
     let mut next_poll = Instant::now();
     loop {
         // Debounce updates and be easy on the IO
         if next_poll < Instant::now() {
             // Synchronize app state with mpv (and perhaps start mpv if it's not running)
-            update_app_state(&mut app)?;
+            app.update();
             next_poll = Instant::now() + POLLING_RATE;
         }
 
@@ -235,7 +282,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> Result<(), A
         terminal.draw(|f| ui(f, &app))?;
 
         // Handle events
-        let mut update_volume = |change: f32| -> Result<(), AnyError> {
+        let mut update_volume = |change: f32| -> Result<()> {
             let volume = mpv_get_property::<f32>("volume")?;
             let volume = (volume + change).max(0.0).min(150.0);
             mpv_set_property("volume", volume)?;
@@ -256,12 +303,14 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> Result<(), A
                     update_volume(-5.0)?;
                 }
                 KeyCode::Char('y') => {
+                    app.current_track = get_track_info().ok();
                     if let Some(track) = &app.current_track {
                         track.search_yt_music();
                     }
                 }
                 KeyCode::Char('n') => {
                     app.station = (app.station + 1) % STATIONS.len();
+                    ensure_playing_station(app.station)?;
                 }
                 _ => {}
             }
@@ -270,14 +319,14 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> Result<(), A
     Ok(())
 }
 
-fn main() -> Result<(), AnyError> {
+fn main() -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let app = App::default();
-    let res = run_app(&mut terminal, app);
+    let mut app = App::load();
+    let res = run_app(&mut terminal, &mut app);
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -288,5 +337,6 @@ fn main() -> Result<(), AnyError> {
     if let Err(e) = res {
         eprintln!("Error: {}", e);
     }
+    app.store()?;
     Ok(())
 }
