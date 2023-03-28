@@ -23,18 +23,28 @@ type AnyError = Box<dyn Error>;
 
 // Constants
 const APP_TITLE: &str = "Nightride FM - The Home of Synthwave";
-const STATION_URL: &str = "http://stream.nightride.fm/nightride.ogg";
+const STATION_BASE_URL: &str = "http://stream.nightride.fm/";
+const STATIONS: [&str; 7] = [
+    "nightride",
+    "chillsynth",
+    "datawave",
+    "spacesynth",
+    "darksynth",
+    "horrorsynth",
+    "ebsm",
+];
 const INPUT_IPC_SERVER_FILE_PATH: &str = "/tmp/nightride.sock";
 const POLLING_RATE: Duration = Duration::from_secs(1);
 const YT_MUSIC_SEARCH_URL: &str = "https://music.youtube.com/search?q=";
 
 /// Start the player
-fn mpv_start() -> Result<(), AnyError> {
+fn mpv_start(station: usize) -> Result<(), AnyError> {
+    let station_url = format!("{}{}.ogg", STATION_BASE_URL, STATIONS[station]);
     // Use nohup to avoid the process being killed when the terminal is closed
     Command::new("nohup")
         .args([
             "mpv",
-            STATION_URL,
+            station_url.as_str(),
             format!("--input-ipc-server={}", INPUT_IPC_SERVER_FILE_PATH).as_str(),
             ">/dev/null", // Do not create nohup.out
             "2>&1",       // Redirect stderr to stdout
@@ -55,12 +65,16 @@ fn mpv_stop() -> Result<(), AnyError> {
 }
 
 /// Ensure that the player is running and playing the station
-fn ensure_mpv_running_station() -> Result<(), AnyError> {
-    let is_running_station = mpv_get_property::<String>("filename").unwrap_or("".into())
-        == STATION_URL.split("/").last().unwrap();
+fn ensure_mpv_running_station(station: usize) -> Result<(), AnyError> {
+    let is_running_station = mpv_get_property::<String>("filename")
+        .unwrap_or("".into())
+        .split(".")
+        .nth(0)
+        .unwrap_or("")
+        == STATIONS[station];
     if !is_running_station {
         mpv_stop().ok(); // Ignore errors (MPV might not have been running)
-        mpv_start()?;
+        mpv_start(station)?;
     }
     Ok(())
 }
@@ -127,6 +141,7 @@ struct App {
     is_paused: bool,
     current_track: Option<Track>,
     volume: f32,
+    station: usize,
 }
 
 impl Default for App {
@@ -135,6 +150,7 @@ impl Default for App {
             is_paused: true,
             current_track: None,
             volume: 100.0,
+            station: 0,
         }
     }
 }
@@ -162,36 +178,43 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(4)
-        .constraints([Constraint::Min(1), Constraint::Min(1), Constraint::Min(1)].as_ref())
+        .constraints(vec![Constraint::Min(1); 4])
         .split(f.size());
     f.render_widget(
         Paragraph::new(Text::from(Spans::from(format!(
-            "State:  {}",
-            match app.is_paused {
-                true => "Paused",
-                false => "Playing",
-            }
+            "Station: {}",
+            STATIONS[app.station]
         )))),
         chunks[0],
     );
     f.render_widget(
         Paragraph::new(Text::from(Spans::from(format!(
-            "Track:  {}",
-            match &app.current_track {
-                Some(track) => format!("{}", track),
-                None => "???".to_string(),
+            "State:   {}",
+            match app.is_paused {
+                true => "paused",
+                false => "playing",
             }
         )))),
         chunks[1],
     );
     f.render_widget(
-        Paragraph::new(Text::from(Spans::from(format!("Volume: {}", app.volume)))),
+        Paragraph::new(Text::from(Spans::from(format!(
+            "Track:   {}",
+            match &app.current_track {
+                Some(track) => format!("{}", track),
+                None => "...".to_string(),
+            }
+        )))),
         chunks[2],
+    );
+    f.render_widget(
+        Paragraph::new(Text::from(Spans::from(format!("Volume:  {}", app.volume)))),
+        chunks[3],
     );
 }
 
 fn update_app_state(app: &mut App) -> Result<(), AnyError> {
-    ensure_mpv_running_station()?;
+    ensure_mpv_running_station(app.station)?;
     app.is_paused = mpv_get_property("pause").unwrap_or(true);
     app.current_track = get_track_info().ok();
     app.volume = mpv_get_property("volume").unwrap_or(100.0);
@@ -201,8 +224,9 @@ fn update_app_state(app: &mut App) -> Result<(), AnyError> {
 fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> Result<(), AnyError> {
     let mut next_poll = Instant::now();
     loop {
-        // Synchronize app state with mpv (and perhaps start mpv if it's not running)
+        // Debounce updates and be easy on the IO
         if next_poll < Instant::now() {
+            // Synchronize app state with mpv (and perhaps start mpv if it's not running)
             update_app_state(&mut app)?;
             next_poll = Instant::now() + POLLING_RATE;
         }
@@ -235,6 +259,9 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> Result<(), A
                     if let Some(track) = &app.current_track {
                         track.search_yt_music();
                     }
+                }
+                KeyCode::Char('n') => {
+                    app.station = (app.station + 1) % STATIONS.len();
                 }
                 _ => {}
             }

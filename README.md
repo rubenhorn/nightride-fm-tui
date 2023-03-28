@@ -13,7 +13,8 @@ This app is Linux-only.
 2. Press `p` to play/pause
 3. Change the volume with `v` and `V`
 4. Search the current song on YouTube Music with `y`
-5. Press `q` to quit
+5. Switch to the next station with `n`
+6. Press `q` to quit
 
 ## Roadmap
 - [x] Play/pause
@@ -22,6 +23,8 @@ This app is Linux-only.
 - [x] Look up the current song on YouTube Music
 - [ ] Nice TUI
 - [x] Volume control
-- [ ] Add more stations
+- [ ] List of previous songs
+- [x] Add more stations
+- [ ] Remember the last station
 - [ ] CLI (start/stop, station selection, get YT Music search link, path to mpv socket)
 - [ ] Inline code documentation
