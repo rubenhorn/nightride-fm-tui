@@ -6,7 +6,8 @@ This app is Linux-only.
 ## Installation
 1. Install the dependencies (mpv, rust toolchain)
 2. Clone the repository
-3. Run `cargo install --path .`
+3. Try it out using `cargo run`
+4. Install `./install.sh`
 
 ## Usage
 1. Run `nightride`
@@ -18,7 +19,7 @@ This app is Linux-only.
 
 ## Roadmap
 - [x] Play/pause
-- [x] Quit
+- [x] Quit (background playback)
 - [x] Display the current song
 - [x] Look up the current song on YouTube Music
 - [ ] Nice TUI

@@ -1,1 +1,5 @@
+# Output of the rust toolchain
 /target
+
+# Temporary files created by scripts
+tmp.*

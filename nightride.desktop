@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Nightride FM
+Comment=The Home of Synthwave
+Exec=nightride
+Terminal=true
+Categories=Audio;AudioVideo;
+Icon=~/.local/share/nightride/icon.png
